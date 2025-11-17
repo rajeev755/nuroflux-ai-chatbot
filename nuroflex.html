@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="google-site-verification" content="gZ15secxLlschAMpCwRztY_XNA7XqzT58zt9uqEzPkQ" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NuroFlux AI Chat</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configure Tailwind for Inter font and custom colors -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        'gemini-blue': '#4285F4',
+                        'gemini-dark': '#1F2937',
+                        'gemini-light': '#F3F4F6',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Ensure the body and html take full height */
+        html, body { height: 100%; margin: 0; padding: 0; }
+        /* Utility for full screen */
+        .full-screen-chat { height: 100vh; width: 100vw; }
+        
+        /* Custom scrollbar styling for better aesthetics */
+        #chat-output::-webkit-scrollbar { width: 8px; }
+        #chat-output::-webkit-scrollbar-thumb { background-color: #9CA3AF; border-radius: 4px; }
+        
+        /* Sidebar transition style */
+        #history-sidebar.hidden-sidebar { transform: translateX(100%); }
+        #history-sidebar.visible-sidebar { transform: translateX(0); }
+        
+        /* Style for the loading/empty history state */
+        .loading-history {
+            height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #6B7280;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans full-screen-chat flex flex-col overflow-hidden">
+
+    <!-- Main Application Container -->
+    <div id="main-container" class="flex flex-1 overflow-hidden relative">
+
+        <!-- Chat Window (Takes all available space) -->
+        <div id="chat-window" class="flex flex-col flex-1 bg-white shadow-xl transition-all duration-300">
+            
+            <!-- Header -->
+            <header class="bg-gemini-blue p-4 text-white flex justify-between items-center flex-shrink-0">
+                <h1 class="text-2xl font-bold">NuroFlux</h1>
+                <button onclick="toggleHistoryModal()" 
+                        class="p-2 rounded-full hover:bg-blue-600 transition duration-150 relative">
+                    <!-- History Icon (Clock) -->
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                </button>
+            </header>
+
+            <!-- Chat Output Area -->
+            <main id="chat-output" class="flex-grow p-6 space-y-4 overflow-y-auto bg-gemini-light">
+                <!-- Chat messages will appear here -->
+            </main>
+
+            <!-- Input Area -->
+            <footer class="p-4 border-t border-gray-200 flex-shrink-0">
+                
+                <!-- Mode Selector -->
+                <div class="flex justify-center mb-3 text-sm">
+                    <button id="mode-text" onclick="switchMode('text')" 
+                            class="px-4 py-2 rounded-l-full font-semibold border transition duration-150 bg-gemini-blue text-white border-gemini-blue">
+                        💬 Text Mode
+                    </button>
+                    <button id="mode-image" onclick="switchMode('image')" 
+                            class="px-4 py-2 rounded-r-full font-semibold border transition duration-150 border-gray-300 text-gray-700 bg-white hover:bg-gray-50">
+                        🖼️ Image Mode
+                    </button>
+                </div>
+                
+                <div class="flex space-x-3">
+                    <input type="text" id="user-input" placeholder="Type your text question here..."
+                           class="flex-grow p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gemini-blue transition duration-150"
+                           onkeypress="if(event.key === 'Enter') sendMessage()">
+                    
+                    <button onclick="sendMessage()" id="send-button" disabled
+                            class="bg-gemini-blue text-white p-3 rounded-lg font-semibold hover:bg-blue-600 transition duration-150 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center">
+                        Send
+                    </button>
+                </div>
+                <div id="status-message" class="text-sm mt-2 text-center text-red-500 hidden"></div>
+            </footer>
+        </div>
+
+        <!-- History Sidebar/Modal -->
+        <div id="history-sidebar" class="absolute right-0 inset-y-0 w-full max-w-sm md:w-80 bg-white border-l border-gray-200 shadow-2xl transition-transform duration-300 hidden-sidebar z-40 flex flex-col">
+            <header class="bg-gray-800 p-4 text-white flex justify-between items-center flex-shrink-0">
+                <h2 class="text-xl font-bold">Conversation History</h2>
+                <button onclick="toggleHistoryModal()" class="p-1 rounded-full hover:bg-gray-700 transition duration-150">
+                    <!-- Close Icon (X) -->
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </header>
+            <div id="history-content" class="flex-1 overflow-y-auto p-4 space-y-4">
+                <div class="loading-history">Loading history...</div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, onSnapshot, collection, query, addDoc, serverTimestamp, orderBy, limit, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- GLOBAL STATE AND CONFIGURATION ---
+        const apiKey = ""; 
+        
+        // Text Model Configuration
+        const textModelName = "gemini-2.5-flash-preview-09-2025";
+        const textApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${textModelName}:generateContent?key=${apiKey}`;
+        
+        // Image Model Configuration
+        const imageModelName = "imagen-4.0-generate-001";
+        const imageApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${imageModelName}:predict?key=${apiKey}`;
+
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+        let currentMode = 'text'; // Default mode is text
+        
+        // Firestore path helpers
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const CHAT_COLLECTION = 'history_entries';
+
+        function getHistoryCollectionRef(dbInstance, uid) {
+            // Private data storage path: /artifacts/{appId}/users/{userId}/{collectionName}
+            return collection(dbInstance, 'artifacts', appId, 'users', uid, CHAT_COLLECTION);
+        }
+
+        // --- DOM ELEMENTS ---
+        const chatOutput = document.getElementById('chat-output');
+        const userInput = document.getElementById('user-input');
+        const sendButton = document.getElementById('send-button');
+        const statusMessage = document.getElementById('status-message');
+        const historySidebar = document.getElementById('history-sidebar');
+        const historyContent = document.getElementById('history-content');
+        const modeTextButton = document.getElementById('mode-text');
+        const modeImageButton = document.getElementById('mode-image');
+        
+        // --- FIREBASE INITIALIZATION ---
+
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        if (Object.keys(firebaseConfig).length > 0) {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('error'); // Suppress verbose Firebase logs
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (!user) {
+                        try {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        } catch (error) {
+                            console.error("Firebase Auth Error:", error);
+                            statusMessage.textContent = "Auth failed. Check console.";
+                            statusMessage.classList.remove('hidden');
+                        }
+                    }
+
+                    userId = auth.currentUser?.uid;
+                    isAuthReady = true;
+                    if (userId) {
+                        sendButton.disabled = false;
+                        loadHistory();
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase Initialization Error:", error);
+                isAuthReady = true; // Still allow sending, but history will be skipped
+                sendButton.disabled = false;
+                statusMessage.textContent = "Firebase setup failed. History disabled.";
+                statusMessage.classList.remove('hidden');
+            }
+        } else {
+            console.error("Firebase Config Missing: Cannot enable history functionality.");
+            isAuthReady = true;
+            sendButton.disabled = false;
+            statusMessage.textContent = "History disabled (no Firebase config).";
+            statusMessage.classList.remove('hidden');
+        }
+
+        // --- MODE SWITCHING ---
+
+        /**
+         * Switches the application's current generation mode (Text or Image).
+         * @param {string} mode - 'text' or 'image'.
+         */
+        window.switchMode = function(mode) {
+            currentMode = mode;
+            if (mode === 'text') {
+                modeTextButton.className = 'px-4 py-2 rounded-l-full font-semibold border transition duration-150 bg-gemini-blue text-white border-gemini-blue';
+                modeImageButton.className = 'px-4 py-2 rounded-r-full font-semibold border transition duration-150 border-gray-300 text-gray-700 bg-white hover:bg-gray-50';
+                userInput.placeholder = "Type your text question here...";
+            } else {
+                modeImageButton.className = 'px-4 py-2 rounded-r-full font-semibold border transition duration-150 bg-gemini-blue text-white border-gemini-blue';
+                modeTextButton.className = 'px-4 py-2 rounded-l-full font-semibold border transition duration-150 border-gray-300 text-gray-700 bg-white hover:bg-gray-50';
+                userInput.placeholder = "Describe the image you want to generate (e.g., 'A cyberpunk cat drinking coffee')...";
+            }
+            userInput.focus();
+        };
+
+
+        // --- HISTORY MANAGEMENT ---
+
+        window.toggleHistoryModal = function() {
+            if (historySidebar.classList.contains('hidden-sidebar')) {
+                historySidebar.classList.remove('hidden-sidebar');
+                historySidebar.classList.add('visible-sidebar');
+                document.body.style.overflow = 'hidden';
+            } else {
+                historySidebar.classList.remove('visible-sidebar');
+                historySidebar.classList.add('hidden-sidebar');
+                document.body.style.overflow = 'auto';
+            }
+        };
+
+        function loadHistory() {
+            if (!db || !userId) return;
+
+            const q = query(
+                getHistoryCollectionRef(db, userId),
+                orderBy('timestamp', 'desc'),
+                limit(50) 
+            );
+
+            onSnapshot(q, (snapshot) => {
+                const historyData = [];
+                snapshot.forEach((doc) => {
+                    historyData.push(doc.data());
+                });
+                renderHistory(historyData);
+            }, (error) => {
+                console.error("Error loading history:", error);
+                historyContent.innerHTML = `<div class="p-4 text-center text-red-500">Error loading history.</div>`;
+            });
+        }
+
+        function renderHistory(history) {
+            if (!history || history.length === 0) {
+                historyContent.innerHTML = `<div class="p-4 text-center text-gray-500">No conversation history found.</div>`;
+                return;
+            }
+
+            const groupedHistory = history.reduce((groups, item) => {
+                if (!item.timestamp) return groups; // Skip entries without timestamp
+                const date = item.timestamp.toDate().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+                if (!groups[date]) {
+                    groups[date] = [];
+                }
+                groups[date].push(item);
+                return groups;
+            }, {});
+
+            let html = '';
+            for (const date in groupedHistory) {
+                html += `<div class="text-sm font-bold text-gray-600 sticky top-0 bg-white py-2 border-b border-gray-200">${date}</div>`;
+                
+                groupedHistory[date].forEach((entry) => {
+                    const time = entry.timestamp.toDate().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+                    const modeIcon = entry.mode === 'image' ? '🖼️' : '💬';
+                    const snippet = (entry.user_query.substring(0, 50) + (entry.user_query.length > 50 ? '...' : '')).replace(/\n/g, ' ');
+                    
+                    // Escape single quotes for use in onclick attribute
+                    const safeQuery = entry.user_query.replace(/'/g, "\\'");
+                    const safeResponse = entry.ai_response.replace(/'/g, "\\'");
+                    const safeMode = entry.mode;
+
+                    html += `
+                        <div class="p-3 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-100 transition duration-150 cursor-pointer mb-2" 
+                             onclick="viewEntry('${safeQuery}', '${safeResponse}', '${safeMode}')">
+                            <p class="text-xs text-gray-400 mb-1">${time} ${modeIcon}</p>
+                            <p class="text-sm font-semibold text-gray-800">${snippet}</p>
+                        </div>
+                    `;
+                });
+            }
+
+            historyContent.innerHTML = html;
+        }
+
+        /**
+         * Clears the current chat and displays a selected history entry.
+         * @param {string} query - The user's query.
+         * @param {string} response - The AI's response (text or image data URL).
+         * @param {string} mode - 'text' or 'image'.
+         */
+        window.viewEntry = function(query, response, mode) {
+            chatOutput.innerHTML = ''; 
+            addMessage(query, 'user', false);
+            addMessage(response, 'ai', mode === 'image'); 
+            toggleHistoryModal(); 
+        };
+
+        /**
+         * Saves the current conversation turn to Firestore.
+         */
+        async function saveHistory(userQuery, aiResponse, mode) {
+            if (!db || !userId) {
+                console.warn("Firestore not ready. Skipping history save.");
+                return;
+            }
+            try {
+                await addDoc(getHistoryCollectionRef(db, userId), {
+                    user_query: userQuery,
+                    ai_response: aiResponse,
+                    mode: mode, 
+                    timestamp: serverTimestamp()
+                });
+            } catch (error) {
+                console.error("Failed to save history:", error);
+            }
+        }
+
+        // --- CHAT FUNCTIONS ---
+
+        /**
+         * Adds a message to the main chat output area.
+         * @param {string} content - The message content (text or image data URL).
+         * @param {string} sender - 'user' or 'ai'.
+         * @param {boolean} isImage - True if the content is an image URL.
+         */
+        function addMessage(content, sender, isImage = false) {
+            const messageContainer = document.createElement('div');
+            messageContainer.className = `flex ${sender === 'user' ? 'justify-end' : 'justify-start'}`;
+
+            const messageBubble = document.createElement('div');
+            messageBubble.className = `p-3 rounded-lg max-w-xs md:max-w-md shadow-md ${
+                sender === 'user'
+                    ? 'bg-gemini-blue text-white'
+                    : 'bg-white text-gray-800'
+            }`;
+
+            const senderLabel = document.createElement('p');
+            senderLabel.className = 'text-xs font-semibold mb-1 opacity-90';
+            senderLabel.textContent = sender === 'user' ? 'You' : 'AI Assistant';
+
+            if (sender === 'ai') {
+                messageBubble.appendChild(senderLabel);
+            }
+
+            if (isImage) {
+                const imageElement = document.createElement('img');
+                imageElement.src = content;
+                imageElement.className = 'rounded-lg w-full max-h-96 object-contain';
+                imageElement.alt = "Generated Image";
+                imageElement.onload = () => chatOutput.scrollTop = chatOutput.scrollHeight;
+                messageBubble.appendChild(imageElement);
+            } else {
+                const messageText = document.createElement('p');
+                messageText.className = 'text-sm whitespace-pre-wrap';
+                // Use innerHTML to handle markdown formatting (like newlines)
+                messageText.innerHTML = content.replace(/\n/g, '<br>');
+                messageBubble.appendChild(messageText);
+            }
+            
+            messageContainer.appendChild(messageBubble);
+            chatOutput.appendChild(messageContainer);
+            
+            // Scroll to the latest message
+            chatOutput.scrollTop = chatOutput.scrollHeight;
+        }
+
+        /**
+         * Handles the API call for text generation.
+         */
+        async function generateText(userQuery) {
+            const systemPrompt = "You are a friendly, helpful, and concise conversational AI assistant named NuroFlux. Your goal is to provide brief but informative answers to any question asked. Format your output using basic markdown.";
+            
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            let responseText = "Sorry, I couldn't connect to the AI for text generation. Please try again.";
+            let delay = 1000;
+            const maxRetries = 5;
+
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(textApiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        const candidate = result.candidates?.[0];
+                        if (candidate && candidate.content?.parts?.[0]?.text) {
+                            return candidate.content.parts[0].text; // Success
+                        } else {
+                            throw new Error("API returned an unexpected structure.");
+                        }
+                    } else if (response.status === 429) {
+                        if (i < maxRetries - 1) {
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                            delay *= 2; 
+                        } else {
+                            throw new Error("API rate limit exceeded after multiple retries.");
+                        }
+                    } else {
+                        throw new Error(`API call failed with status: ${response.status} ${response.statusText}`);
+                    }
+                } catch (error) {
+                    if (i < maxRetries - 1 && error.message.includes("Failed to fetch")) {
+                         await new Promise(resolve => setTimeout(resolve, delay));
+                         delay *= 2;
+                    } else {
+                        throw error;
+                    }
+                }
+            }
+            return responseText;
+        }
+
+        /**
+         * Handles the API call for image generation.
+         */
+        async function generateImage(prompt) {
+            const payload = { 
+                instances: [{ prompt: prompt }], 
+                parameters: { "sampleCount": 1 } 
+            };
+            
+            let imageUrl = null;
+            let delay = 1000;
+            const maxRetries = 5;
+
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(imageApiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        if (result.predictions && result.predictions.length > 0 && result.predictions[0].bytesBase64Encoded) {
+                            const base64Data = result.predictions[0].bytesBase64Encoded;
+                            return `data:image/png;base64,${base64Data}`; // Success
+                        } else {
+                            throw new Error("Image API returned an invalid structure or no image data.");
+                        }
+                    } else if (response.status === 429) {
+                        if (i < maxRetries - 1) {
+                            await new Promise(resolve => setTimeout(resolve, delay));
+                            delay *= 2;
+                        } else {
+                            throw new Error("Image API rate limit exceeded after multiple retries.");
+                        }
+                    } else {
+                        throw new Error(`Image API call failed with status: ${response.status} ${response.statusText}`);
+                    }
+                } catch (error) {
+                    if (i < maxRetries - 1 && error.message.includes("Failed to fetch")) {
+                         await new Promise(resolve => setTimeout(resolve, delay));
+                         delay *= 2; 
+                    } else {
+                        throw error; // Propagate final error
+                    }
+                }
+            }
+            return imageUrl;
+        }
+
+        /**
+         * Main function to send the user's message/prompt.
+         */
+        window.sendMessage = async function() {
+            const userQuery = userInput.value.trim();
+            if (!userQuery) return;
+
+            // 1. Display user message and clear input
+            addMessage(userQuery, 'user', false);
+            userInput.value = '';
+
+            // 2. Set loading state
+            sendButton.disabled = true;
+            sendButton.textContent = currentMode === 'text' ? 'Thinking...' : 'Generating Image...';
+            statusMessage.textContent = '';
+            statusMessage.classList.add('hidden');
+            
+            // Add a temporary AI placeholder message
+            let aiPlaceholder = document.createElement('div');
+            aiPlaceholder.className = 'flex justify-start';
+            aiPlaceholder.innerHTML = `
+                <div class="bg-white p-3 rounded-lg max-w-xs md:max-w-md shadow-md animate-pulse">
+                    <p class="text-sm font-semibold text-gemini-blue">AI Assistant</p>
+                    <p class="text-gray-500">...</p>
+                </div>
+            `;
+            chatOutput.appendChild(aiPlaceholder);
+            chatOutput.scrollTop = chatOutput.scrollHeight;
+
+            let responseContent = "An unexpected error occurred.";
+            let isImageResult = currentMode === 'image';
+            
+            try {
+                if (currentMode === 'text') {
+                    responseContent = await generateText(userQuery);
+                } else {
+                    responseContent = await generateImage(userQuery);
+                    if (!responseContent) {
+                         responseContent = "Image generation failed. Please try a different prompt or check the console.";
+                         isImageResult = false;
+                    }
+                }
+            } catch (error) {
+                console.error("Operation failed:", error);
+                responseContent = `Error during ${currentMode} generation: ${error.message}.`;
+                isImageResult = false;
+            }
+            
+            // 3. Update UI
+            // Remove the placeholder message
+            chatOutput.removeChild(aiPlaceholder);
+
+            // Display the final AI response
+            addMessage(responseContent, 'ai', isImageResult);
+
+            // 4. Save the successful turn to Firestore
+            if (isAuthReady) {
+                await saveHistory(userQuery, responseContent, currentMode);
+            }
+
+            // 5. Reset state
+            sendButton.disabled = false;
+            sendButton.textContent = 'Send';
+            userInput.focus();
+        };
+
+        // Initialize UI placeholder text
+        window.onload = () => {
+            switchMode('text');
+        }
+    </script>
+</body>
+</html>
